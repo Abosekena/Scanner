@@ -11,7 +11,12 @@
     <!-- مكتبة SheetJS لتصدير ملفات Excel -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
-<body class="bg-gray-100 font-sans min-h-screen p-4">
+<body class="bg-gray-100 font-sans min-h-screen p-4 relative">
+
+    <!-- عنصر الإشعار المؤقت (Toast) عند نجاح المسح -->
+    <div id="toast" class="fixed top-5 left-1/2 transform -translate-x-1/2 bg-green-600 text-white px-6 py-3 rounded-lg shadow-xl font-bold flex items-center gap-2 z-50 transition-opacity duration-300 opacity-0 pointer-events-none">
+        <span>✅ تم سحب القطعة وإضافتها بنجاح!</span>
+    </div>
 
     <div class="max-w-2xl mx-auto bg-white rounded-xl shadow-md overflow-hidden p-6 space-y-6">
         <h2 class="text-2xl font-bold text-center text-gray-800">ماسح باركود GS1 المتعدد</h2>
@@ -31,7 +36,7 @@
 
         <!-- آخر نتيجة تم مسحها -->
         <div id="result-container" class="hidden bg-gray-50 border border-gray-200 rounded-lg p-4 shadow-inner space-y-3">
-            <h3 class="text-md font-semibold text-gray-700 border-b pb-1">📦 آخر قطـعة تم مسحها:</h3>
+            <h3 class="text-md font-semibold text-gray-700 border-b pb-1">📦 آخر قطعة تم مسحها:</h3>
             <div class="space-y-1 text-xs text-gray-600">
                 <p><strong>الباركود الخام:</strong> <span id="raw-data" class="text-black font-mono break-all"></span></p>
                 <p><strong>GTIN:</strong> <span id="gtin-val" class="text-blue-600 font-mono font-bold"></span> | 
@@ -69,7 +74,7 @@
             <!-- أزرار الإجراءات العامة -->
             <div class="flex gap-2">
                 <button onclick="exportToExcel()" id="export-btn" disabled class="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-bold py-2.5 px-4 rounded-lg shadow w-full transition duration-200 flex items-center justify-center gap-2">
-                    📊 تصدير الكل إلى Excel (<span id="export-count">0</span>)
+                    📊 تصدير مجمع إلى Excel (<span id="export-count">0</span>)
                 </button>
             </div>
         </div>
@@ -78,6 +83,8 @@
     <script>
         let html5QrCode;
         let scannedItems = []; // مصفوفة لتخزين جميع القطع المسحوبة
+        let lastScannedText = "";
+        let lastScannedTime = 0;
 
         function startScanner() {
             document.getElementById('start-btn').classList.add('hidden');
@@ -92,10 +99,16 @@
                     qrbox: { width: 250, height: 250 }
                 },
                 (decodedText, decodedResult) => {
+                    // حماية من تكرار مسح نفس الباركود في أجزاء من الثانية
+                    let nowMs = Date.now();
+                    if (decodedText === lastScannedText && (nowMs - lastScannedTime) < 2000) {
+                        return; // يتجاهل المسح المكرر الفوري لنفس العلبة
+                    }
+                    lastScannedText = decodedText;
+                    lastScannedTime = nowMs;
+
                     processGS1Data(decodedText);
-                    // ملحوظة: تم إلغاء stopScanner تلقائياً لتمكين المسح المتتابع السريع، 
-                    // لو أردت إيقاف الكاميرا بعد كل مسحة يمكنك إلغاء التعليق عن السطر التالي:
-                    // stopScanner(); 
+                    showToast(); // إظهار الإشعار المرئي عند نجاح المسح
                 },
                 (errorMessage) => {}
             ).catch((err) => {
@@ -104,6 +117,7 @@
                     { fps: 10, qrbox: { width: 250, height: 250 } },
                     (decodedText, decodedResult) => {
                         processGS1Data(decodedText);
+                        showToast();
                     }
                 ).catch(innerErr => {
                     alert("عذراً، لا يمكن الوصول للكاميرا. تأكد من الصلاحيات ووجود رابط HTTPS.");
@@ -126,6 +140,18 @@
             }
         }
 
+        // دالة إظهار إشعار السحب بنجاح
+        function showToast() {
+            let toast = document.getElementById('toast');
+            toast.classList.remove('opacity-0', 'pointer-events-none');
+            toast.classList.add('opacity-100');
+            
+            setTimeout(() => {
+                toast.classList.remove('opacity-100');
+                toast.classList.add('opacity-0', 'pointer-events-none');
+            }, 1800);
+        }
+
         // دالة تحليل باركود GS1
         function processGS1Data(raw) {
             document.getElementById('result-container').classList.remove('hidden');
@@ -134,7 +160,6 @@
             let gtin = "غير متوفر";
             let expiry = "غير متوفر";
             let batch = "غير متوفر";
-            let now = new Date().toLocaleTimeString('ar-EG');
             let fullTimestamp = new Date().toLocaleString('ar-EG');
 
             // 1. استخراج GTIN (يبدأ بـ 01 وطوله 14 رقم)
@@ -156,17 +181,19 @@
             let batchIndex = raw.indexOf("10");
             if (batchIndex !== -1) {
                 let sub = raw.substring(batchIndex + 2);
-                // فصل البيانات في حال وجود فاصل FNC1 أو رموز إضافية
                 let cleanBatch = sub.split(/[\x1d]/)[0];
-                // أخذ آخر 8 أرقام من الجزء الخاص بالتشغيلة
                 if (cleanBatch.length >= 8) {
                     batch = cleanBatch.slice(-8);
                 } else {
-                    batch = cleanBatch; // في حال كان النص أصلاً أقل من 8 أحرف
+                    batch = cleanBatch;
                 }
             }
 
-            // منع تكرار نفس القطعة فوراً وراء بعض لو تم مسحها بالخطأ بالثانية نفسها (اختياري)
+            // تحديث العرض العلوي لآخر قطعة
+            document.getElementById('gtin-val').innerText = gtin;
+            document.getElementById('expiry-val').innerText = expiry;
+            document.getElementById('batch-val').innerText = batch;
+
             let newItem = {
                 id: Date.now(),
                 raw: raw,
@@ -176,8 +203,7 @@
                 timestamp: fullTimestamp
             };
 
-            // إضافة العنصر لمصفوفة البيانات
-            scannedItems.unshift(newItem); // إضافة العنصر الجديد في البداية
+            scannedItems.unshift(newItem);
             updateTableUI();
         }
 
@@ -202,7 +228,6 @@
                 tbody.innerHTML += row;
             });
 
-            // تحديث العدادات وأزرار التصدير
             let count = scannedItems.length;
             document.getElementById('items-count').innerText = count;
             document.getElementById('export-count').innerText = count;
@@ -230,24 +255,51 @@
             }
         }
 
-        // دالة إنشاء وتنزيل ملف الإكسيل لجميع القطع
+        // دالة تصدير ملف الإكسيل مع دمج الأكواد المتشابهة وحساب الكمية
         function exportToExcel() {
             if (scannedItems.length === 0) return;
 
-            let excelData = scannedItems.map((item, index) => ({
+            // كائن لتجميع القطع المتشابهة حسب (GTIN + Expiry + Batch)
+            let groupedMap = {};
+
+            scannedItems.forEach(item => {
+                // المفتاح الفردي لكل مجموعة
+                let groupKey = `${item.gtin}_${item.expiry}_${item.batch}`;
+
+                if (groupedMap[groupKey]) {
+                    // زيادة الكمية إذا كان الصنف موجوداً مسبقاً
+                    groupedMap[groupKey].quantity += 1;
+                    // تحديث آخر وقت مسح للصنف
+                    groupedMap[groupKey].lastTimestamp = item.timestamp;
+                } else {
+                    // إنشائه لأول مرة إذا لم يكن موجوداً
+                    groupedMap[groupKey] = {
+                        gtin: item.gtin,
+                        expiry: item.expiry,
+                        batch: item.batch,
+                        quantity: 1,
+                        lastTimestamp: item.timestamp,
+                        raw: item.raw
+                    };
+                }
+            });
+
+            // تحويل البيانات المجمعة إلى مصفوفة لتصديرها لإكسيل
+            let excelData = Object.values(groupedMap).map((item, index) => ({
                 "م": index + 1,
                 "كود المنتج (GTIN)": item.gtin,
                 "تاريخ الصلاحية": item.expiry,
                 "رقم التشغيلة (Batch/LOT)": item.batch,
-                "وقت المسح": item.timestamp,
-                "الباركود الخام": item.raw
+                "الكمية الممسوحة": item.quantity,
+                "آخر وقت مسح": item.lastTimestamp,
+                "الباركود الخام (نموذجي)": item.raw
             }));
 
             let worksheet = XLSX.utils.json_to_sheet(excelData);
             let workbook = XLSX.utils.book_new();
-            XLSX.utils.book_append_sheet(workbook, worksheet, "GS1 Scanned Batch");
+            XLSX.utils.book_append_sheet(workbook, worksheet, "ملخص القطع الممسوحة");
 
-            let fileName = `GS1_Batch_Export_${Date.now()}.xlsx`;
+            let fileName = `GS1_Merged_Export_${Date.now()}.xlsx`;
             XLSX.writeFile(workbook, fileName);
         }
     </script>
