@@ -121,8 +121,8 @@
         </div>
     </div>
 
-    <!-- قالب التقرير المخفي المخصص للطباعة PDF -->
-    <div class="hidden">
+    <!-- قالب التقرير المخصص للطباعة PDF (تم توضيعه خارج الشاشة ليعمل التحويل بنجاح) -->
+    <div style="position: absolute; left: -9999px; top: -9999px; width: 800px;">
         <div id="pdf-template" class="p-8 font-sans bg-white text-gray-800 space-y-6" dir="rtl">
             <div class="flex justify-between items-center border-b-2 border-blue-600 pb-4">
                 <div>
@@ -343,6 +343,7 @@
             }, 1400);
         }
 
+        // الدالة المحدثة لقراءة الـ Batch بشكل دقيق ومساند لقواعد GS1
         function parseGS1String(raw) {
             let parsed = {
                 gtin: "غير متوفر",
@@ -350,8 +351,12 @@
                 batch: "غير متوفر"
             };
 
+            if (!raw) return parsed;
+
+            // تنظيف الأقواس المكتوبة صراحة مثل (01) (17) (10) (21)
             let cleanRaw = raw.replace(/\((01|17|10|21)\)/g, "$1");
 
+            // 1. استخراج GTIN (AI: 01)
             let gtinMatch = cleanRaw.match(/01(\d{14})/);
             if (gtinMatch) {
                 parsed.gtin = gtinMatch[1];
@@ -359,6 +364,7 @@
                 parsed.gtin = raw.trim();
             }
 
+            // 2. استخراج الصلاحية Expiry (AI: 17) - 6 أرقام (YYMMDD)
             let expMatch = cleanRaw.match(/17(\d{6})/);
             if (expMatch) {
                 let yy = expMatch[1].substring(0, 2);
@@ -367,11 +373,16 @@
                 parsed.expiry = `20${yy}-${mm}-${dd}`;
             }
 
+            // 3. استخراج رقم التشغيلة Batch/LOT (AI: 10)
             let batchMatch = cleanRaw.match(/10([^\x1d\u001d]+)/);
             if (batchMatch) {
                 let batchVal = batchMatch[1];
-                batchVal = batchVal.split(/17\d{6}|21/)[0];
-                parsed.batch = batchVal.length >= 8 ? batchVal.slice(-8) : batchVal;
+
+                // فصل أي معرّف محتمل متبوع (مثل AI 21 للـ Serial Number أو AI 17 للصلاحية)
+                let separated = batchVal.split(/(?=17\d{6}|21[A-Za-z0-9]+)/);
+                batchVal = separated[0];
+
+                parsed.batch = batchVal.trim();
             }
 
             return parsed;
@@ -447,18 +458,17 @@
                 let displayName = catalogEntry ? catalogEntry.name : item.name;
                 let expected = catalogEntry ? catalogEntry.expected : item.expectedQty;
 
-                // مطابقة حالة الجرد لتحديد اللون
                 let rowBgClass = "";
                 if (expected > 0) {
                     if (item.quantity === expected) {
-                        rowBgClass = "bg-green-50/70 border-r-4 border-green-500"; // مطابق
+                        rowBgClass = "bg-green-50/70 border-r-4 border-green-500";
                     } else if (item.quantity < expected) {
-                        rowBgClass = "bg-yellow-50/70 border-r-4 border-yellow-500"; // عجز
+                        rowBgClass = "bg-yellow-50/70 border-r-4 border-yellow-500";
                     } else {
-                        rowBgClass = "bg-red-50/70 border-r-4 border-red-500"; // زيادة
+                        rowBgClass = "bg-red-50/70 border-r-4 border-red-500";
                     }
                 } else {
-                    rowBgClass = "bg-red-50/40 border-r-4 border-red-300"; // غير مدرج بالدليل
+                    rowBgClass = "bg-red-50/40 border-r-4 border-red-300";
                 }
 
                 let row = `
@@ -547,7 +557,6 @@
             let items = Object.values(scannedGroups);
             if (items.length === 0) return;
 
-            // ملء بيانات التقرير
             let now = new Date();
             document.getElementById('pdf-timestamp').innerText = now.toLocaleString('ar-EG');
             document.getElementById('pdf-total-items').innerText = items.length;
@@ -576,12 +585,18 @@
                 pdfTbody.innerHTML += row;
             });
 
-            let element = document.getElementById('pdf-template');
+            const element = document.getElementById('pdf-template');
+
             let opt = {
-                margin:       0.5,
+                margin:       0.3,
                 filename:     `GS1_Audit_Report_${Date.now()}.pdf`,
                 image:        { type: 'jpeg', quality: 0.98 },
-                html2canvas:  { scale: 2 },
+                html2canvas:  { 
+                    scale: 2, 
+                    useCORS: true,
+                    scrollX: 0,
+                    scrollY: 0
+                },
                 jsPDF:        { unit: 'in', format: 'a4', orientation: 'portrait' }
             };
 
