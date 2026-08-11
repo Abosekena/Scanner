@@ -121,7 +121,7 @@
         </div>
     </div>
 
-    <!-- قالب التقرير المخصص للطباعة PDF (خارج الشاشة ليعمل التحويل بنجاح) -->
+    <!-- قالب التقرير المخصص للطباعة PDF -->
     <div style="position: absolute; left: -9999px; top: -9999px; width: 800px;">
         <div id="pdf-template" class="p-8 font-sans bg-white text-gray-800 space-y-6" dir="rtl">
             <div class="flex justify-between items-center border-b-2 border-blue-600 pb-4">
@@ -342,7 +342,7 @@
             }, 1400);
         }
 
-        // الدالة المعدلة لمعالجة الـ GTIN والـ Batch بدقة
+        // دالة تفكيك الرموز الذكية (التمييز بين GS1 والباركود العادي)
         function parseGS1String(raw) {
             let parsed = {
                 gtin: "غير متوفر",
@@ -354,38 +354,59 @@
 
             let cleanRaw = raw.trim();
 
-            // 1. الباركودات العادية (EAN-13 / UPC / GTIN فقط)
-            if (/^\d{8,14}$/.test(cleanRaw)) {
-                parsed.gtin = cleanRaw;
-                return parsed;
+            // 1. إزالة بادئات GS1 Symbology Identifiers مثل ]d2 أو ]C1 إن وجدت
+            let text = cleanRaw.replace(/^\](d2|C1|e0)/i, '');
+
+            // 2. التحقق مما إذا كان الكود GS1 حقيقي (يحتوي على أقواس أو رمز FNC1 أو يبدأ بـ GTIN 01 صريح)
+            let hasGS1Bracket = /\((01|17|10|21)\)/.test(text);
+            let hasFNC1 = /[\x1d\u001d]/.test(text);
+            let startsWithGTIN01 = /^01\d{14}/.test(text);
+
+            let isGS1 = hasGS1Bracket || hasFNC1 || startsWithGTIN01;
+
+            // إذا لم يكن كود GS1 مركّب (مثلاً EAN-13 عادي أو UPC أو QR عادي)
+            if (!isGS1) {
+                parsed.gtin = text; // الكود بالكامل هو GTIN
+                return parsed;     // عدم اقتطاع باتش أو تاريخ من الأرقام العادية
             }
 
-            let text = cleanRaw.replace(/\((01|17|10|21)\)/g, "$1");
+            // 3. معالجة أكواد GS1 المركبة
+            text = text.replace(/\((01|17|10|21)\)/g, "$1");
 
-            // 2. استخراج GTIN (01)
+            // استخراج GTIN (المعرف 01 - 14 رقم)
             let gtinMatch = text.match(/01(\d{14})/);
             if (gtinMatch) {
                 parsed.gtin = gtinMatch[1];
             }
 
-            // 3. استخراج Expiry (17)
+            // استخراج تاريخ الصلاحية (المعرف 17 - YYMMDD)
             let expMatch = text.match(/17(\d{6})/);
             if (expMatch) {
                 let yy = expMatch[1].substring(0, 2);
                 let mm = expMatch[1].substring(2, 4);
                 let dd = expMatch[1].substring(4, 6);
-                parsed.expiry = `20${yy}-${mm}-${dd}`;
+
+                let mNum = parseInt(mm, 10);
+                let dNum = parseInt(dd, 10);
+                if (mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31) {
+                    parsed.expiry = `20${yy}-${mm}-${dd}`;
+                }
             }
 
-            // 4. استخراج Batch/LOT (10)
+            // استخراج رقم التشغيلة/الباتش (المعرف 10)
             let batchMatch = text.match(/(?:^|[^\d])10([A-Za-z0-9\-]+)/);
             if (batchMatch) {
                 let batchVal = batchMatch[1];
-                let cleanBatch = batchVal.split(/[\x1d\u001d]|17\d{6}|21/)[0];
+                let cleanBatch = batchVal.split(/[\x1d\u001d]|17\d{6}|21\d+/)[0];
                 
                 if (cleanBatch !== parsed.gtin && cleanBatch.length > 0) {
                     parsed.batch = cleanBatch.trim();
                 }
+            }
+
+            // إذا كان كود GS1 ولكن بدون المعرف 01 صراحةً
+            if (parsed.gtin === "غير متوفر" && text.length > 0) {
+                parsed.gtin = text.split(/[\x1d\u001d]/)[0];
             }
 
             return parsed;
