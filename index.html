@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>نظام جرد ومسح GS1 الشامل</title>
-    <!-- PWA Web App Manifest (Inline Blob) -->
+    <!-- PWA Web App Manifest -->
     <link rel="manifest" href='data:application/manifest+json,{"name":"GS1 Scanner Pro","short_name":"GS1Scanner","start_url":".","display":"standalone","background_color":"#ffffff","theme_color":"#2563eb"}'>
     <meta name="theme-color" content="#2563eb">
     
@@ -14,7 +14,7 @@
     <script src="https://unpkg.com/html5-qrcode"></script>
     <!-- SheetJS (Excel) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-    <!-- html2pdf.js (PDF Generation) -->
+    <!-- html2pdf.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body class="bg-gray-100 font-sans min-h-screen p-3 md:p-6 relative">
@@ -306,9 +306,9 @@
             }, 1400);
         }
 
-        // ==========================================
-        // دالة التفكيك المحدثة والمرنة جداً لـ GS1
-        // ==========================================
+        // ============================================================
+        // دالة تفكيك GS1 الدقيقة بناءً على المواصفات القياسية للجهاز
+        // ============================================================
         function parseGS1String(raw) {
             let parsed = {
                 gtin: "غير متوفر",
@@ -318,63 +318,72 @@
 
             if (!raw) return parsed;
 
-            let text = raw.trim();
+            // تنظيف النص وإزالة البادئات غير المرئية أو الناتجة من القارئ
+            let str = raw.trim()
+                         .replace(/^\](d2|C1|e0)/i, '')
+                         .replace(/\((01|17|10|21)\)/g, "$1")
+                         .replace(/[\x1d\u001d]/g, "|");
 
-            // 1. تنظيف بادئات GS1 الشائعة (Sybmology Identifiers)
-            text = text.replace(/^\](d2|C1|e0)/i, '');
-            
-            // 2. إذا كان الباركود مجرد أرقام قصيرة (8 إلى 13 رقم) مثل EAN-13 أو UPC
-            if (/^\d{8,13}$/.test(text)) {
-                parsed.gtin = text;
+            // 1. إذا كان الكود مجرد باركود خطي عادي (8 إلى 13 رقم)
+            if (/^\d{8,13}$/.test(str)) {
+                parsed.gtin = str;
                 return parsed;
             }
 
-            // 3. إزالة الأقواس المكتوبة إن وجدت وتحويل رموز الفصل غير المرئية إلى |
-            let cleanText = text.replace(/\((01|17|10|21)\)/g, "$1")
-                                .replace(/[\x1d\u001d\s]/g, "|");
+            let index = 0;
+            while (index < str.length) {
+                // تخطي الفواصل إن وجدت
+                if (str[index] === '|') {
+                    index++;
+                    continue;
+                }
 
-            // 4. استخراج GTIN (المعرف 01)
-            let gtinMatch = cleanText.match(/01(\d{14})/);
-            if (gtinMatch) {
-                parsed.gtin = gtinMatch[1];
-            } else {
-                // إذا لم يوجد معرّف 01، وكان النص يبدأ بـ 13/14 رقم مباشرة
-                let simpleGtin = cleanText.match(/^(\d{13,14})/);
-                if (simpleGtin) {
-                    parsed.gtin = simpleGtin[1];
+                // AI (01): GTIN ثابت بـ 14 رقم
+                if (str.substring(index, index + 2) === "01") {
+                    index += 2;
+                    if (index + 14 <= str.length) {
+                        parsed.gtin = str.substring(index, index + 14);
+                        index += 14;
+                    }
+                }
+                // AI (17): Expiry Date ثابت بـ 6 أرقام (YYMMDD)
+                else if (str.substring(index, index + 2) === "17") {
+                    index += 2;
+                    if (index + 6 <= str.length) {
+                        let expStr = str.substring(index, index + 6);
+                        let yy = expStr.substring(0, 2);
+                        let mm = expStr.substring(2, 4);
+                        let dd = expStr.substring(4, 6);
+
+                        let mNum = parseInt(mm, 10);
+                        let dNum = parseInt(dd, 10);
+                        if (mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31) {
+                            parsed.expiry = `20${yy}-${mm}-${dd}`;
+                        }
+                        index += 6;
+                    }
+                }
+                // AI (10): Batch / Lot متغير الطول (حتى ظهور فاصل أو إلى نهاية النص)
+                else if (str.substring(index, index + 2) === "10") {
+                    index += 2;
+                    let nextPipe = str.indexOf('|', index);
+                    if (nextPipe !== -1) {
+                        parsed.batch = str.substring(index, nextPipe);
+                        index = nextPipe + 1;
+                    } else {
+                        parsed.batch = str.substring(index);
+                        index = str.length; // الوصول للنهاية
+                    }
+                }
+                else {
+                    index++;
                 }
             }
 
-            // 5. استخراج Expiry (المعرف 17) - 6 أرقام YYMMDD
-            let expMatch = cleanText.match(/17(\d{6})/);
-            if (expMatch) {
-                let yy = expMatch[1].substring(0, 2);
-                let mm = expMatch[1].substring(2, 4);
-                let dd = expMatch[1].substring(4, 6);
-
-                let mNum = parseInt(mm, 10);
-                let dNum = parseInt(dd, 10);
-                if (mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31) {
-                    parsed.expiry = `20${yy}-${mm}-${dd}`;
-                }
-            }
-
-            // 6. استخراج Batch/LOT (المعرف 10)
-            let batchMatch = cleanText.match(/(?:10|10\s*)([A-Za-z0-9\-]+)/);
-            if (batchMatch) {
-                let rawBatch = batchMatch[1];
-                // القطع عند ظهور علامة الفصل أو المعرفات الأخرى مثل 17 أو 21
-                let cleanBatch = rawBatch.split(/\||17\d{6}|21/)[0];
-
-                // التأكد من أن الباتش المستخرج ليس هو نفسه الـ GTIN
-                if (cleanBatch && cleanBatch !== parsed.gtin && cleanBatch.length < 20) {
-                    parsed.batch = cleanBatch.trim();
-                }
-            }
-
-            // إذا فشل كل شيء وكان كود خطي عادي
+            // إذا لم يتم العثور على GTIN بالـ Parser التتابعي
             if (parsed.gtin === "غير متوفر") {
-                parsed.gtin = text.split('|')[0];
+                let simpleGtin = str.match(/\d{13,14}/);
+                if (simpleGtin) parsed.gtin = simpleGtin[0];
             }
 
             return parsed;
